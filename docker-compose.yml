@@ -3,7 +3,7 @@ version: '3.8'
 
 services:
   magento:
-    image: shinsenter/magento:8.2-fpm-nginx # Use the tag you confirmed works
+    image: shinsenter/magento:php8.2-nginx # Use the tag you confirmed works
     volumes:
       # Use a named volume to trigger the auto-download and install.
       - magento-code:/var/www/html
