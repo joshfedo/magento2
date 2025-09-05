@@ -1,33 +1,25 @@
-# docker-compose.yml - Using Official Adobe Magento Images
+# docker-compose.yml - Corrected service dependency
 version: '3.8'
 
 services:
   # 1. The Magento Application Service (Nginx + PHP-FPM)
-  # Adobe's image bundles the web server and PHP application together.
   magento:
-    image: magento/magento-cloud-docker-php:8.2-fpm-1.2 # Official Adobe Image
+    image: magento/magento-cloud-docker-php:8.2-fpm-1.2
     ports:
-      # Coolify will manage the public-facing port mapping.
       - "80"
     volumes:
-      # Mounts your Magento code into the container
       - ./:/app
     environment:
-      # Database connection details for Magento
       - MYSQL_HOST=db
       - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
       - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
       - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-      # Redis connection for Caching/Sessions
       - REDIS_HOST=redis
-      # Elasticsearch connection
-      - ELASTICSEARCH_HOST=elasticsearch
-      # Other required Magento variables
-      - MAGENTO_RUN_MODE=developer # Set to 'production' for live sites
+      - ELASTICSEARCH_HOST=opensearch # Pointing to the opensearch service
     depends_on:
       - db
       - redis
-      - elasticsearch
+      - opensearch # <--- CORRECTED THIS LINE
     networks:
       - magento-network
 
@@ -38,22 +30,21 @@ services:
       - '--max_allowed_packet=64M'
       - '--innodb_log_file_size=256M'
     environment:
-      # These variables create the database and user on first run.
       - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
       - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
       - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
       - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
     volumes:
-      - dbdata:/var/lib/mysql # Persists database data
+      - dbdata:/var/lib/mysql
     networks:
       - magento-network
 
-  # 3. The Search Service (OpenSearch, since it's the successor to ES)
-  opensearch:
-    image: opensearchproject/opensearch:2.5.0 # Using OpenSearch is more future-proof
+  # 3. The Search Service (OpenSearch)
+  opensearch: # <--- Service is named "opensearch"
+    image: opensearchproject/opensearch:2.5.0
     environment:
       - "discovery.type=single-node"
-      - "plugins.security.disabled=true" # OK for dev, review for prod
+      - "plugins.security.disabled=true"
     networks:
       - magento-network
 
@@ -63,10 +54,8 @@ services:
     networks:
       - magento-network
 
-# Define the shared network for all services
 networks:
   magento-network:
 
-# Define persistent volumes
 volumes:
   dbdata:
