@@ -1,0 +1,82 @@
+# docker-compose.yml - Place in the root of your Git repository
+version: '3.8'
+
+services:
+  # 1. The Application Service (PHP-FPM)
+  # This container runs the Magento code.
+  app:
+    image: markshust/magento-php:8.2-fpm-4 # Use a specific, stable version
+    volumes:
+      - ./:/var/www/html             # Mounts your Magento code into the container
+      - sock:/var/run/docker.sock  # Allows app to communicate with Docker (for setup)
+      - appdata:/var/www/html/var  # Persists Magento's 'var' directory
+    environment:
+      # These are dynamic variables Coolify will provide.
+      # The values after ':-' are defaults if the Coolify variable isn't set.
+      - MYSQL_HOST=db
+      - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
+      - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
+      - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+      - ELASTICSEARCH_HOST=elasticsearch
+      - REDIS_HOST=redis
+    depends_on:
+      - db
+      - redis
+      - elasticsearch
+    networks:
+      - magento-network
+
+  # 2. The Web Server (Nginx)
+  # This container receives traffic and passes PHP requests to the 'app' service.
+  web:
+    image: markshust/magento-nginx:1.22-3 # Use a specific, stable version
+    ports:
+      # Coolify will manage the public-facing port mapping.
+      # This tells Coolify that the container listens on port 80.
+      - "80" 
+    volumes:
+      - ./:/var/www/html
+    depends_on:
+      - app
+    networks:
+      - magento-network
+
+  # 3. The Database Service (MariaDB)
+  db:
+    image: mariadb:10.6
+    command:
+      - '--max_allowed_packet=64M'
+      - '--innodb_log_file_size=256M'
+    environment:
+      - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
+      - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
+      - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
+      - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+    volumes:
+      - dbdata:/var/lib/mysql # Persists database data
+    networks:
+      - magento-network
+
+  # 4. The Search Service (Elasticsearch)
+  elasticsearch:
+    image: markshust/magento-elasticsearch:7.17-1 # Magento 2.4.5+ compatibility
+    environment:
+      - discovery.type=single-node
+    networks:
+      - magento-network
+
+  # 5. The Caching Service (Redis)
+  redis:
+    image: redis:6.2-alpine
+    networks:
+      - magento-network
+
+# Define the shared network for all services to communicate
+networks:
+  magento-network:
+
+# Define persistent volumes to store data between deployments
+volumes:
+  dbdata:
+  sock:
+  appdata:
