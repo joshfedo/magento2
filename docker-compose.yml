@@ -1,37 +1,35 @@
-# docker-compose.yml - For deploying an EXISTING Magento repo with shinsenter/magento
+# docker-compose.yml - Final Authoritative Version
 version: '3.8'
 
 services:
-  # 1. The All-in-One Magento Service
   magento:
-    image: shinsenter/magento:php8.2-nginx
-    container_name: magento-app
+    image: shinsenter/magento:8.2-fpm-nginx # Use the tag you confirmed works
     ports:
-      - "13371:80"
+      - "13371:80" # This explicit port is reliable
     volumes:
-      # Mount the code from your Git repository into the container.
-      # This is the correct way for a Git-based workflow.
-      - ./:/var/www/html
+      # CRITICAL: Mount a named volume for the code, NOT the local directory.
+      # This will be empty on first deploy, triggering the auto-download/install.
+      - magento-code:/var/www/html
     environment:
       # --- Database Connection ---
-      # These are used by Magento to connect to the DB.
       - M2_DB_HOST=db
       - M2_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
       - M2_DB_USER=${COOLIFY_DATABASE_USER:-magento}
       - M2_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
 
-      # --- Redis Connection ---
+      # --- Redis & OpenSearch ---
       - M2_REDIS_HOST=redis
-
-      # --- OpenSearch Connection ---
       - M2_SEARCH_ENGINE=opensearch
       - M2_OPENSEARCH_HOST=opensearch
 
-      # --- CRITICAL CHANGE: Disable Auto-Install ---
-      # We will manage the installation ourselves. Setting M2_ADMIN_USER to an empty
-      # string is the documented way to prevent the auto-install script from running.
-      - M2_ADMIN_USER=
+      # --- Auto-Install Configuration ---
+      # The image will see these variables and run setup:install for us.
       - M2_BASE_URL=http://${COOLIFY_FQDN:-localhost}/
+      - M2_ADMIN_USER=admin
+      - M2_ADMIN_PASSWORD=Password123!
+      - M2_ADMIN_EMAIL=admin@example.com
+      - M2_ADMIN_FIRSTNAME=Admin
+      - M2_ADMIN_LASTNAME=User
     depends_on:
       - db
       - redis
@@ -39,7 +37,7 @@ services:
     networks:
       - magento-network
 
-  # ... (The db, opensearch, and redis services remain exactly the same as before) ...
+  # ... The db, opensearch, and redis services remain the same ...
   db:
     image: mariadb:10.6
     environment:
@@ -65,8 +63,10 @@ services:
     networks:
       - magento-network
 
+# Define the volumes that will be created and persisted
 networks:
   magento-network:
 
 volumes:
   dbdata:
+  magento-code: # This is where your Magento code will live, managed by Docker.
