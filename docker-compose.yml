@@ -1,45 +1,44 @@
-# docker-compose.yml - Using Coolify's "Magic" Environment Variables
+# docker-compose.yml - Final Version with Traefik Labels
 version: '3.8'
 
 services:
   magento:
-    image: shinsenter/magento:php8.2-nginx # Use the tag you confirmed works
+    image: shinsenter/magento:php8.2-nginx # Use your confirmed working tag
+    networks:
+      - magento-network
+      # Connect to Coolify's main network so the proxy can see this container
+      - coolify-network
     volumes:
       # Use a named volume to trigger the auto-download and install.
       - magento-code:/var/www/html
     environment:
-      # --- Coolify Magic Variable ---
-      # This tells Coolify's proxy to route traffic for the FQDN to this container's port 80.
-      # You will set the actual domain (m2demo.ubuntu.orb.local) in the Coolify UI.
-      - SERVICE_FQDN_MAGENTO_80
-
-      # --- Database Connection ---
+      # All auto-install environment variables remain the same
       - M2_DB_HOST=db
       - M2_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
       - M2_DB_USER=${COOLIFY_DATABASE_USER:-magento}
       - M2_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-
-      # --- Redis & OpenSearch ---
       - M2_REDIS_HOST=redis
       - M2_SEARCH_ENGINE=opensearch
       - M2_OPENSEARCH_HOST=opensearch
-
-      # --- Auto-Install Configuration ---
-      # This uses another magic variable, SERVICE_URL_MAGENTO, which Coolify
-      # will automatically populate with the full URL (e.g., http://m2demo.ubuntu.orb.local).
-      - M2_BASE_URL=${SERVICE_URL_MAGENTO}
+      - M2_BASE_URL=http://${COOLIFY_FQDN:-localhost}/
       - M2_ADMIN_USER=admin
       - M2_ADMIN_PASSWORD=Password123!
     depends_on:
       - db
       - redis
       - opensearch
-    networks:
-      - magento-network
+    # --- CRITICAL ADDITION: LABELS FOR TRAEFIK PROXY ---
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.magento-poc.rule=Host(`${COOLIFY_FQDN}`)"
+      - "traefik.http.routers.magento-poc.entrypoints=http"
+      - "traefik.http.services.magento-poc.loadbalancer.server.port=80"
 
   # --- No changes are needed for the other services ---
   db:
     image: mariadb:10.6
+    networks:
+      - magento-network
     environment:
       - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
       - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
@@ -47,24 +46,27 @@ services:
       - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
     volumes:
       - dbdata:/var/lib/mysql
-    networks:
-      - magento-network
 
   opensearch:
     image: opensearchproject/opensearch:2.5.0
+    networks:
+      - magento-network
     environment:
       - "discovery.type=single-node"
       - "plugins.security.disabled=true"
-    networks:
-      - magento-network
 
   redis:
     image: redis:6.2-alpine
     networks:
       - magento-network
 
+# --- CRITICAL NETWORK DEFINITION ---
 networks:
   magento-network:
+  coolify-network:
+    # This tells Docker to connect to the existing network used by the proxy
+    name: coolify
+    external: true
 
 volumes:
   dbdata:
