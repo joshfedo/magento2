@@ -5,8 +5,8 @@ services:
   # 1. The All-in-One Magento Service
   magento:
     image: shinsenter/magento:php8.2-nginx
-    ports:
-      - "8080:80"
+    exposes:
+      - "80"
     volumes:
       # Mount the code from your Git repository into the container.
       # This is the correct way for a Git-based workflow.
