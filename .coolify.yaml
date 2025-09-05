@@ -1,17 +1,18 @@
-# .coolify.yaml - Place in the root of your Git repository
+# .coolify.yaml - Updated for Adobe Docker Images
 tasks:
-  # This command runs *after* the services are started for the first time.
-  # It installs Magento using the environment variables from the docker-compose file.
   setup:
     command: |
-      docker exec $(docker ps -q -f "name=app") bash -c \
+      # Wait a few seconds for all services to be ready
+      sleep 15;
+      # Find the running container named 'magento' and execute setup inside it
+      docker exec $(docker ps -q -f "name=magento") bash -c \
         "bin/magento setup:install \
           --db-host=\"$MYSQL_HOST\" \
           --db-name=\"$MYSQL_DATABASE\" \
           --db-user=\"$MYSQL_USER\" \
           --db-password=\"$MYSQL_PASSWORD\" \
-          --search-engine='elasticsearch7' \
-          --elasticsearch-host=\"$ELASTICSEARCH_HOST\" \
+          --search-engine='opensearch' \
+          --opensearch-host=\"$ELASTICSEARCH_HOST\" \
           --base-url=\"http://$COOLIFY_FQDN/\" \
           --admin-firstname=Admin \
           --admin-lastname=User \
