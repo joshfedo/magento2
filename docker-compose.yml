@@ -3,7 +3,7 @@ version: '3.8'
 
 services:
   magento:
-    image: shinsenter/magento:8.2-fpm-nginx # Use the tag you confirmed works
+    image: shinsenter/magento:php8.2-nginx # Use the tag you confirmed works
     ports:
       - "13371:80" # This explicit port is reliable
     volumes:
