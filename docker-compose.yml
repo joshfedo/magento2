@@ -5,7 +5,7 @@ services:
   # 1. The All-in-One Magento Service
   magento:
     image: shinsenter/magento:php8.2-nginx
-    exposes:
+    expose:
       - "80"
     volumes:
       # Mount the code from your Git repository into the container.
