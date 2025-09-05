@@ -1,7 +1,84 @@
-# docker-compose.yml - Fully Parameterized for Version Control
+# docker-compose.yml - Fully Parameterized for Version Control with Preview DB Cloning
 version: '3.8'
-
 services:
+  # Database cloning service - only runs for preview environments
+  db-clone:
+    image: mariadb:${DB_IMAGE_TAG:-10.6}
+    networks:
+      - magento-network
+    environment:
+      - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
+      - TARGET_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
+      - TARGET_DB_USER=${COOLIFY_DATABASE_USER:-magento}
+      - TARGET_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+      # Source database connection (main environment)
+      - SOURCE_DB_HOST=db
+      - SOURCE_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
+      - SOURCE_DB_USER=${COOLIFY_DATABASE_USER:-magento}
+      - SOURCE_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+      - SOURCE_DB_PORT=3306
+      # Coolify context
+      - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
+      - COOLIFY_FQDN=${COOLIFY_FQDN}
+    volumes:
+      - dbdata:/var/lib/mysql
+    command: |
+      bash -c "
+        set -e
+        echo '🚀 Database initialization for preview environment'
+        
+        # Only run for preview environments
+        if [ \"\$COOLIFY_PREVIEW_DEPLOYMENT\" != \"true\" ]; then
+          echo '⏭️ Not a preview deployment, skipping database cloning'
+          exit 0
+        fi
+        
+        # Start MySQL
+        docker-entrypoint.sh mysqld &
+        MYSQL_PID=\$!
+        
+        # Wait for MySQL
+        for i in {1..60}; do
+          if mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" -e 'SELECT 1' >/dev/null 2>&1; then
+            echo '✅ MySQL is ready'
+            break
+          fi
+          sleep 1
+        done
+        
+        # Create target database
+        mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" -e \"
+          CREATE DATABASE IF NOT EXISTS \\\`\$TARGET_DB_NAME\\\`;
+          CREATE USER IF NOT EXISTS '\$TARGET_DB_USER'@'%' IDENTIFIED BY '\$TARGET_DB_PASSWORD';
+          GRANT ALL PRIVILEGES ON \\\`\$TARGET_DB_NAME\\\`.* TO '\$TARGET_DB_USER'@'%';
+          FLUSH PRIVILEGES;
+        \"
+        
+        # Try to clone from main environment
+        echo '📥 Attempting to clone database from main environment...'
+        if mysqldump -h \"\$SOURCE_DB_HOST\" -u \"\$SOURCE_DB_USER\" -p\"\$SOURCE_DB_PASSWORD\" --single-transaction \"\$SOURCE_DB_NAME\" 2>/dev/null | mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" \"\$TARGET_DB_NAME\"; then
+          echo '✅ Database cloned successfully'
+          
+          # Sanitize data for dev environment
+          mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" \"\$TARGET_DB_NAME\" -e \"
+            UPDATE core_config_data SET value = 'https://\$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url') AND '\$COOLIFY_FQDN' != '';
+            UPDATE core_config_data SET value = '1' WHERE path LIKE '%dev/debug%';
+            UPDATE core_config_data SET value = 'sandbox' WHERE path LIKE '%payment%mode%';
+          \" 2>/dev/null || echo 'Data sanitization skipped'
+          
+        else
+          echo '⚠️ Could not clone database, using empty database'
+        fi
+        
+        # Shutdown MySQL
+        kill \$MYSQL_PID 2>/dev/null || true
+        wait \$MYSQL_PID 2>/dev/null || true
+        echo '✅ Database initialization complete'
+      "
+    restart: "no"
+    profiles:
+      - clone
+
   magento:
     # Use variables for the image tag. Defaults to php8.2-nginx.
     image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.2-nginx}
@@ -19,13 +96,17 @@ services:
       - M2_REDIS_HOST=redis
       - M2_SEARCH_ENGINE=opensearch
       - M2_OPENSEARCH_HOST=opensearch
-      - M2_BASE_URL=http://${COOLIFY_FQDN:-localhost}/
+      - M2_BASE_URL=https://${COOLIFY_FQDN:-localhost}/
       - M2_ADMIN_USER=${COOLIFY_ENV_ADMIN_USER:-admin}
       - M2_ADMIN_PASSWORD=${COOLIFY_ENV_ADMIN_PASSWORD:-Password123!}
+      # Preview environment indicator
+      - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.magento-poc.rule=Host(`${COOLIFY_FQDN}`)"
-      - "traefik.http.routers.magento-poc.entrypoints=http"
+      - "traefik.http.routers.magento-poc.entrypoints=websecure"
+      - "traefik.http.routers.magento-poc.tls=true"
+      - "traefik.http.routers.magento-poc.tls.certresolver=letsencrypt"
       - "traefik.http.services.magento-poc.loadbalancer.server.port=80"
     depends_on:
       - db
