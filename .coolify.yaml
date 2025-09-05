@@ -1,26 +1,24 @@
-# .coolify.yaml - Updated for Adobe Docker Images
+# .coolify.yaml - For manually installing Magento
 tasks:
+  # This 'setup' task runs only on the very first deployment
   setup:
     command: |
-      # Wait a few seconds for all services to be ready
+      # Wait for services to be fully ready
       sleep 15;
-      # Find the running container named 'magento' and execute setup inside it
+      # Find the running container and execute the install command inside it
       docker exec $(docker ps -q -f "name=magento") bash -c \
         "bin/magento setup:install \
-          --db-host=\"$MYSQL_HOST\" \
-          --db-name=\"$MYSQL_DATABASE\" \
-          --db-user=\"$MYSQL_USER\" \
-          --db-password=\"$MYSQL_PASSWORD\" \
-          --search-engine='opensearch' \
-          --opensearch-host=\"$ELASTICSEARCH_HOST\" \
-          --base-url=\"http://$COOLIFY_FQDN/\" \
+          --db-host=\"$M2_DB_HOST\" \
+          --db-name=\"$M2_DB_NAME\" \
+          --db-user=\"$M2_DB_USER\" \
+          --db-password=\"$M2_DB_PASSWORD\" \
+          --search-engine=\"$M2_SEARCH_ENGINE\" \
+          --opensearch-host=\"$M2_OPENSEARCH_HOST\" \
+          --base-url=\"$M2_BASE_URL\" \
           --admin-firstname=Admin \
           --admin-lastname=User \
           --admin-email=admin@example.com \
           --admin-user=admin \
-          --admin-password=Password123 \
-          --language=en_US \
-          --currency=USD \
-          --timezone=America/Chicago \
+          --admin-password=Password123! \
           --use-rewrites=1 && \
         bin/magento deploy:mode:set developer"
