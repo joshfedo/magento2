@@ -5,6 +5,7 @@ services:
   # 1. The All-in-One Magento Service
   magento:
     image: shinsenter/magento:php8.2-nginx
+    container_name: magento-app
     ports:
       - "13371:80"
     volumes:
