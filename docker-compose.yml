@@ -1,16 +1,18 @@
-# docker-compose.yml - Final Authoritative Version
+# docker-compose.yml - Using Coolify's "Magic" Environment Variables
 version: '3.8'
 
 services:
   magento:
-    image: shinsenter/magento:php8.2-nginx # Use the tag you confirmed works
-    ports:
-      - "13371:80" # This explicit port is reliable
+    image: shinsenter/magento:8.2-fpm-nginx # Use the tag you confirmed works
     volumes:
-      # CRITICAL: Mount a named volume for the code, NOT the local directory.
-      # This will be empty on first deploy, triggering the auto-download/install.
+      # Use a named volume to trigger the auto-download and install.
       - magento-code:/var/www/html
     environment:
+      # --- Coolify Magic Variable ---
+      # This tells Coolify's proxy to route traffic for the FQDN to this container's port 80.
+      # You will set the actual domain (m2demo.ubuntu.orb.local) in the Coolify UI.
+      - SERVICE_FQDN_MAGENTO_80
+
       # --- Database Connection ---
       - M2_DB_HOST=db
       - M2_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
@@ -23,13 +25,11 @@ services:
       - M2_OPENSEARCH_HOST=opensearch
 
       # --- Auto-Install Configuration ---
-      # The image will see these variables and run setup:install for us.
-      - M2_BASE_URL=http://${COOLIFY_FQDN:-localhost}/
+      # This uses another magic variable, SERVICE_URL_MAGENTO, which Coolify
+      # will automatically populate with the full URL (e.g., http://m2demo.ubuntu.orb.local).
+      - M2_BASE_URL=${SERVICE_URL_MAGENTO}
       - M2_ADMIN_USER=admin
       - M2_ADMIN_PASSWORD=Password123!
-      - M2_ADMIN_EMAIL=admin@example.com
-      - M2_ADMIN_FIRSTNAME=Admin
-      - M2_ADMIN_LASTNAME=User
     depends_on:
       - db
       - redis
@@ -37,7 +37,7 @@ services:
     networks:
       - magento-network
 
-  # ... The db, opensearch, and redis services remain the same ...
+  # --- No changes are needed for the other services ---
   db:
     image: mariadb:10.6
     environment:
@@ -63,10 +63,9 @@ services:
     networks:
       - magento-network
 
-# Define the volumes that will be created and persisted
 networks:
   magento-network:
 
 volumes:
   dbdata:
-  magento-code: # This is where your Magento code will live, managed by Docker.
+  magento-code:
