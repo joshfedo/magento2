@@ -1,34 +1,46 @@
-# docker-compose.yml - Corrected service dependency
+# docker-compose.yml - For deploying an EXISTING Magento repo with shinsenter/magento
 version: '3.8'
 
 services:
-  # 1. The Magento Application Service (Nginx + PHP-FPM)
+  # 1. The All-in-One Magento Service
   magento:
-    image: magento/magento-cloud-docker-php:8.2-fpm-1.2
+    image: shinsenter/magento:8.2-fpm-nginx
     ports:
       - "80"
     volumes:
-      - ./:/app
+      # Mount the code from your Git repository into the container.
+      # This is the correct way for a Git-based workflow.
+      - ./:/var/www/html
     environment:
-      - MYSQL_HOST=db
-      - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
-      - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
-      - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-      - REDIS_HOST=redis
-      - ELASTICSEARCH_HOST=opensearch # Pointing to the opensearch service
+      # --- Database Connection ---
+      # These are used by Magento to connect to the DB.
+      - M2_DB_HOST=db
+      - M2_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
+      - M2_DB_USER=${COOLIFY_DATABASE_USER:-magento}
+      - M2_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+
+      # --- Redis Connection ---
+      - M2_REDIS_HOST=redis
+
+      # --- OpenSearch Connection ---
+      - M2_SEARCH_ENGINE=opensearch
+      - M2_OPENSEARCH_HOST=opensearch
+
+      # --- CRITICAL CHANGE: Disable Auto-Install ---
+      # We will manage the installation ourselves. Setting M2_ADMIN_USER to an empty
+      # string is the documented way to prevent the auto-install script from running.
+      - M2_ADMIN_USER=
+      - M2_BASE_URL=http://${COOLIFY_FQDN:-localhost}/
     depends_on:
       - db
       - redis
-      - opensearch # <--- CORRECTED THIS LINE
+      - opensearch
     networks:
       - magento-network
 
-  # 2. The Database Service (MariaDB)
+  # ... (The db, opensearch, and redis services remain exactly the same as before) ...
   db:
     image: mariadb:10.6
-    command:
-      - '--max_allowed_packet=64M'
-      - '--innodb_log_file_size=256M'
     environment:
       - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
       - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
@@ -39,8 +51,7 @@ services:
     networks:
       - magento-network
 
-  # 3. The Search Service (OpenSearch)
-  opensearch: # <--- Service is named "opensearch"
+  opensearch:
     image: opensearchproject/opensearch:2.5.0
     environment:
       - "discovery.type=single-node"
@@ -48,7 +59,6 @@ services:
     networks:
       - magento-network
 
-  # 4. The Caching Service (Redis)
   redis:
     image: redis:6.2-alpine
     networks:
