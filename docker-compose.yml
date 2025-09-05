@@ -4,7 +4,7 @@ version: '3.8'
 services:
   # 1. The All-in-One Magento Service
   magento:
-    image: shinsenter/php8.2-nginx
+    image: shinsenter/magento:php8.2-nginx
     ports:
       - "80"
     volumes:
