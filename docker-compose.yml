@@ -1,83 +1,88 @@
-# docker-compose.yml - Fully Parameterized for Version Control with Preview DB Cloning
+# docker-compose.yml - Enhanced for Automated Preview DB Seeding from Nightly Backups
 version: '3.8'
 services:
-  # Database cloning service - only runs for preview environments
-  db-clone:
+  # New service for nightly database backups - only runs on the main environment
+  db-backup:
+    image: mariadb:${DB_IMAGE_TAG:-10.6}
+    networks:
+      - magento-network
+    environment:
+      - MYSQL_HOST=db
+      - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
+      - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
+      - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+      - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
+    volumes:
+      - db-backups:/backups
+    # This command runs a nightly backup at 2 AM
+    command: |
+      bash -c "
+        if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
+          echo '⏭️ Skipping backup service on preview environment.'
+          exit 0
+        fi
+        while true; do
+          echo ' scheduling next backup.'
+          sleep 86400 # Sleep for 24 hours
+          echo '🚀 Starting nightly database backup...'
+          mysqldump -h \"$MYSQL_HOST\" -u \"$MYSQL_USER\" -p\"$MYSQL_PASSWORD\" \"$MYSQL_DATABASE\" > /backups/latest.sql
+          echo '✅ Nightly backup complete.'
+        done
+      "
+    restart: "unless-stopped"
+    profiles:
+      - backup
+
+  # Modified database service for preview environments
+  db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     environment:
       - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
-      - TARGET_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
-      - TARGET_DB_USER=${COOLIFY_DATABASE_USER:-magento}
-      - TARGET_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-      # Source database connection (main environment)
-      - SOURCE_DB_HOST=db
-      - SOURCE_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
-      - SOURCE_DB_USER=${COOLIFY_DATABASE_USER:-magento}
-      - SOURCE_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-      - SOURCE_DB_PORT=3306
-      # Coolify context
+      - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
+      - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
+      - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
       - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
       - COOLIFY_FQDN=${COOLIFY_FQDN}
     volumes:
       - dbdata:/var/lib/mysql
+      - db-backups:/backups
+    # This initialization script will import the latest backup on preview environments
     command: |
       bash -c "
-        set -e
-        echo '🚀 Database initialization for preview environment'
-        
-        # Only run for preview environments
-        if [ \"\$COOLIFY_PREVIEW_DEPLOYMENT\" != \"true\" ]; then
-          echo '⏭️ Not a preview deployment, skipping database cloning'
-          exit 0
-        fi
-        
-        # Start MySQL
+        # Default entrypoint starts MariaDB
         docker-entrypoint.sh mysqld &
-        MYSQL_PID=\$!
-        
-        # Wait for MySQL
-        for i in {1..60}; do
-          if mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" -e 'SELECT 1' >/dev/null 2>&1; then
-            echo '✅ MySQL is ready'
-            break
-          fi
-          sleep 1
-        done
-        
-        # Create target database
-        mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" -e \"
-          CREATE DATABASE IF NOT EXISTS \\\`\$TARGET_DB_NAME\\\`;
-          CREATE USER IF NOT EXISTS '\$TARGET_DB_USER'@'%' IDENTIFIED BY '\$TARGET_DB_PASSWORD';
-          GRANT ALL PRIVILEGES ON \\\`\$TARGET_DB_NAME\\\`.* TO '\$TARGET_DB_USER'@'%';
-          FLUSH PRIVILEGES;
-        \"
-        
-        # Try to clone from main environment
-        echo '📥 Attempting to clone database from main environment...'
-        if mysqldump -h \"\$SOURCE_DB_HOST\" -u \"\$SOURCE_DB_USER\" -p\"\$SOURCE_DB_PASSWORD\" --single-transaction \"\$SOURCE_DB_NAME\" 2>/dev/null | mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" \"\$TARGET_DB_NAME\"; then
-          echo '✅ Database cloned successfully'
-          
-          # Sanitize data for dev environment
-          mysql -h localhost -u root -p\"\$MYSQL_ROOT_PASSWORD\" \"\$TARGET_DB_NAME\" -e \"
-            UPDATE core_config_data SET value = 'https://\$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url') AND '\$COOLIFY_FQDN' != '';
-            UPDATE core_config_data SET value = '1' WHERE path LIKE '%dev/debug%';
-            UPDATE core_config_data SET value = 'sandbox' WHERE path LIKE '%payment%mode%';
-          \" 2>/dev/null || echo 'Data sanitization skipped'
-          
-        else
-          echo '⚠️ Could not clone database, using empty database'
+        MYSQL_PID=$!
+
+        # For preview deployments, wait for DB to be ready and import the backup
+        if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
+          echo '🔎 Preview environment detected, waiting for database...'
+          for i in {1..60}; do
+            if mysqladmin ping -h localhost --silent; then
+              echo '✅ Database is ready.'
+              # Check if a backup file exists and import it
+              if [ -f /backups/latest.sql ]; then
+                echo '📥 Found database backup, starting import...'
+                mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" < /backups/latest.sql
+                echo '✅ Database import complete.'
+                # Sanitize data for the preview environment
+                mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" -e \"
+                  UPDATE core_config_data SET value = 'https://\$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url');
+                  UPDATE core_config_data SET value = '1' WHERE path LIKE '%dev/debug%';
+                  UPDATE core_config_data SET value = 'sandbox' WHERE path LIKE '%payment%mode%';
+                \"
+                echo '🔧 Database sanitized for preview environment.'
+              else
+                echo '⚠️ No backup found. Starting with an empty database.'
+              fi
+              break
+            fi
+            sleep 1
+          done
         fi
-        
-        # Shutdown MySQL
-        kill \$MYSQL_PID 2>/dev/null || true
-        wait \$MYSQL_PID 2>/dev/null || true
-        echo '✅ Database initialization complete'
+        wait $MYSQL_PID
       "
-    restart: "no"
-    profiles:
-      - clone
 
   magento:
     # Use variables for the image tag. Defaults to php8.2-nginx.
@@ -113,19 +118,6 @@ services:
       - redis
       - opensearch
 
-  db:
-    # Use a variable for the MariaDB version. Defaults to 10.6.
-    image: mariadb:${DB_IMAGE_TAG:-10.6}
-    networks:
-      - magento-network
-    environment:
-      - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
-      - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
-      - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
-      - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-    volumes:
-      - dbdata:/var/lib/mysql
-
   opensearch:
     # Use a variable for the OpenSearch version. Defaults to 2.5.0.
     image: opensearchproject/opensearch:${OPENSEARCH_IMAGE_TAG:-2.5.0}
@@ -150,3 +142,4 @@ networks:
 volumes:
   dbdata:
   magento-code:
+  db-backups: # New volume to store database backups
