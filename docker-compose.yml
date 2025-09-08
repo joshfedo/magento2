@@ -1,13 +1,12 @@
-# docker-compose.yml - FINAL VERSION with Docker Compose Variable Escaping
 version: '3.8'
 services:
-  # Backup service with corrected variable escaping
   db-backup:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     environment:
-      - BACKUP_DB_HOST=db 
+      # We no longer need a custom host variable.
+      # Coolify provides all of these automatically.
       - COOLIFY_DATABASE_NAME
       - COOLIFY_DATABASE_USER
       - COOLIFY_DATABASE_PASSWORD
@@ -22,9 +21,10 @@ services:
           exit 0
         fi
         
-        echo '⏳ Backup service waiting for database connection at $$BACKUP_DB_HOST...'
+        # Statically set the hostname to "db"
+        echo '⏳ Backup service waiting for database connection at host \"db\"...'
         for i in {1..120}; do
-          if mysqladmin ping -h \"$$BACKUP_DB_HOST\" --silent; then
+          if mysqladmin ping -h \"db\" --silent; then
             echo '✅ Database connection established.'
             break
           fi
@@ -37,7 +37,8 @@ services:
 
         while true; do
           echo '🚀 Starting nightly database backup...'
-          mysqldump --no-tablespaces -h \"$$BACKUP_DB_HOST\" -u \"$$COOLIFY_DATABASE_USER\" -p\"$$COOLIFY_DATABASE_PASSWORD\" \"$$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
+          # The hostname is now hardcoded for maximum reliability.
+          mysqldump --no-tablespaces -h \"db\" -u \"$$COOLIFY_DATABASE_USER\" -p\"$$COOLIFY_DATABASE_PASSWORD\" \"$$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
           echo '✅ Nightly backup completed successfully.'
           echo '📅 Scheduling next backup in 24 hours.'
           sleep 86400
@@ -49,7 +50,8 @@ services:
     depends_on:
       - db
 
-  # Database service with corrected variable escaping
+  # The 'db' service and all others remain unchanged from the last version.
+  # They already use the correct variable escaping.
   db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
@@ -102,7 +104,7 @@ services:
         wait $$MYSQL_PID
       "
 
-  # No changes needed in the services below
+  # (magento, opensearch, redis, networks, and volumes sections are unchanged)
   magento:
     image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.2-nginx}
     networks:
