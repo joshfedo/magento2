@@ -1,16 +1,13 @@
-# docker-compose.yml - FINAL CORRECTED VERSION
+# docker-compose.yml - FINAL VERSION with Docker Compose Variable Escaping
 version: '3.8'
 services:
-  # Backup service with a non-conflicting host variable and resilient waiting loop
+  # Backup service with corrected variable escaping
   db-backup:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     environment:
-      # --- THE FIX ---
-      # Use a unique variable name that the mariadb image will not interfere with.
       - BACKUP_DB_HOST=db 
-      # Coolify provides the rest of these automatically
       - COOLIFY_DATABASE_NAME
       - COOLIFY_DATABASE_USER
       - COOLIFY_DATABASE_PASSWORD
@@ -20,31 +17,27 @@ services:
     command: |
       bash -c "
         set -e
-        if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
+        if [ \"$$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
           echo '⏭️ Skipping backup service on preview environment.'
           exit 0
         fi
         
-        # Wait for the database to be ready
-        echo '⏳ Backup service waiting for database connection at $BACKUP_DB_HOST...'
+        echo '⏳ Backup service waiting for database connection at $$BACKUP_DB_HOST...'
         for i in {1..120}; do
-          # Use the unique host variable here as well
-          if mysqladmin ping -h \"$BACKUP_DB_HOST\" --silent; then
+          if mysqladmin ping -h \"$$BACKUP_DB_HOST\" --silent; then
             echo '✅ Database connection established.'
             break
           fi
-          if [ $i -eq 120 ]; then
+          if [ $$i -eq 120 ]; then
             echo '❌ Database connection timed out after 2 minutes.'
             exit 1
           fi
           sleep 1
         done
 
-        # The final, operational backup loop
         while true; do
           echo '🚀 Starting nightly database backup...'
-          # --- AND THE FIX IS USED HERE ---
-          mysqldump --no-tablespaces -h \"$BACKUP_DB_HOST\" -u \"$COOLIFY_DATABASE_USER\" -p\"$COOLIFY_DATABASE_PASSWORD\" \"$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
+          mysqldump --no-tablespaces -h \"$$BACKUP_DB_HOST\" -u \"$$COOLIFY_DATABASE_USER\" -p\"$$COOLIFY_DATABASE_PASSWORD\" \"$$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
           echo '✅ Nightly backup completed successfully.'
           echo '📅 Scheduling next backup in 24 hours.'
           sleep 86400
@@ -56,9 +49,7 @@ services:
     depends_on:
       - db
 
-  # --- NO OTHER SERVICES NEED TO BE CHANGED ---
-  # db, magento, opensearch, and redis sections remain the same as the last correct version.
-
+  # Database service with corrected variable escaping
   db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
@@ -76,26 +67,26 @@ services:
     command: |
       bash -c "
         docker-entrypoint.sh mysqld &
-        MYSQL_PID=$!
-        if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
+        MYSQL_PID=$$!
+        if [ \"$$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
           echo '🔎 Preview environment detected. Waiting for database...'
           for i in {1..60}; do
             if mysqladmin ping -h localhost --silent; then
               echo '✅ Database is ready.'
               if [ -f /backups/latest.sql ]; then
                 echo '📥 Found database backup, starting import...'
-                mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" < /backups/latest.sql
+                mysql -u root -p\"$$MYSQL_ROOT_PASSWORD\" \"$$MYSQL_DATABASE\" < /backups/latest.sql
                 echo '✅ Database import complete.'
                 echo '🔧 Sanitizing database for preview environment...'
-                if [ -n \"$COOLIFY_FQDN\" ]; then
-                  echo \"✅ FQDN found: $COOLIFY_FQDN. Updating base URLs...\"
-                  mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" -e \"
-                    UPDATE core_config_data SET value = 'https://\$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url');
+                if [ -n \"$$COOLIFY_FQDN\" ]; then
+                  echo \"✅ FQDN found: $$COOLIFY_FQDN. Updating base URLs...\"
+                  mysql -u root -p\"$$MYSQL_ROOT_PASSWORD\" \"$$MYSQL_DATABASE\" -e \"
+                    UPDATE core_config_data SET value = 'https://$$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url');
                   \"
                 else
                   echo \"⚠️ COOLIFY_FQDN is empty. Skipping base URL update.\"
                 fi
-                mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" -e \"
+                mysql -u root -p\"$$MYSQL_ROOT_PASSWORD\" \"$$MYSQL_DATABASE\" -e \"
                   UPDATE core_config_data SET value = '1' WHERE path LIKE '%dev/debug%';
                   UPDATE core_config_data SET value = 'sandbox' WHERE path LIKE '%payment%mode%';
                 \"
@@ -108,10 +99,10 @@ services:
             sleep 1
           done
         fi
-        wait $MYSQL_PID
+        wait $$MYSQL_PID
       "
 
-  # (magento, opensearch, redis, networks, and volumes sections are unchanged)
+  # No changes needed in the services below
   magento:
     image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.2-nginx}
     networks:
