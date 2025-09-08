@@ -7,33 +7,51 @@ services:
     networks:
       - magento-network
     environment:
-      - MYSQL_HOST=db
-      - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
-      - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
-      - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+      # Use distinct variable names to avoid conflicts with the image's entrypoint
+      - DUMP_DB_HOST=db
+      - DUMP_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
+      - DUMP_DB_USER=${COOLIFY_DATABASE_USER:-magento}
+      - DUMP_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
       - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
     volumes:
       - db-backups:/backups
-    # This command runs a nightly backup at 2 AM
     command: |
       bash -c "
+        set -e
+        # This service only runs on the main (non-preview) environment
         if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
           echo '⏭️ Skipping backup service on preview environment.'
           exit 0
         fi
+        
+        # Give the DB service a moment to initialize fully on first start
+        echo '⏳ Backup service waiting for database to be ready...'
+        sleep 30
+
+        # Loop to perform nightly backups
         while true; do
-          echo ' scheduling next backup.'
-          sleep 86400 # Sleep for 24 hours
           echo '🚀 Starting nightly database backup...'
-          mysqldump -h \"$MYSQL_HOST\" -u \"$MYSQL_USER\" -p\"$MYSQL_PASSWORD\" \"$MYSQL_DATABASE\" > /backups/latest.sql
-          echo '✅ Nightly backup complete.'
+          
+          # Check for necessary variables to prevent errors
+          if [ -z \"$DUMP_DB_HOST\" ] || [ -z \"$DUMP_DB_USER\" ] || [ -z \"$DUMP_DB_PASSWORD\" ] || [ -z \"$DUMP_DB_NAME\" ]; then
+            echo '❌ Error: Database connection variables are not set. Skipping backup.'
+          else
+            # Execute the dump with the --no-tablespaces flag for better compatibility
+            mysqldump --no-tablespaces -h \"$DUMP_DB_HOST\" -u \"$DUMP_DB_USER\" -p\"$DUMP_DB_PASSWORD\" \"$DUMP_DB_NAME\" > /backups/latest.sql
+            echo '✅ Nightly backup complete.'
+          fi
+          
+          echo '📅 Scheduling next backup in 24 hours.'
+          sleep 86400 # Sleep for 24 hours
         done
       "
     restart: "unless-stopped"
     profiles:
       - backup
+    depends_on:
+      - db
 
-  # Modified database service for preview environments
+  # Database service for both main and preview environments
   db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
@@ -74,10 +92,11 @@ services:
                 \"
                 echo '🔧 Database sanitized for preview environment.'
               else
-                echo '⚠️ No backup found. Starting with an empty database.'
+                echo '⚠️ No backup found. Starting with a fresh database.'
               fi
               break
             fi
+            echo -n '.'
             sleep 1
           done
         fi
@@ -85,7 +104,6 @@ services:
       "
 
   magento:
-    # Use variables for the image tag. Defaults to php8.2-nginx.
     image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.2-nginx}
     networks:
       - magento-network
@@ -93,7 +111,6 @@ services:
     volumes:
       - magento-code:/var/www/html
     environment:
-      # All your existing environment variables for setup
       - M2_DB_HOST=db
       - M2_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
       - M2_DB_USER=${COOLIFY_DATABASE_USER:-magento}
@@ -104,7 +121,6 @@ services:
       - M2_BASE_URL=https://${COOLIFY_FQDN:-localhost}/
       - M2_ADMIN_USER=${COOLIFY_ENV_ADMIN_USER:-admin}
       - M2_ADMIN_PASSWORD=${COOLIFY_ENV_ADMIN_PASSWORD:-Password123!}
-      # Preview environment indicator
       - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
     labels:
       - "traefik.enable=true"
@@ -119,7 +135,6 @@ services:
       - opensearch
 
   opensearch:
-    # Use a variable for the OpenSearch version. Defaults to 2.5.0.
     image: opensearchproject/opensearch:${OPENSEARCH_IMAGE_TAG:-2.5.0}
     networks:
       - magento-network
@@ -128,7 +143,6 @@ services:
       - "plugins.security.disabled=true"
 
   redis:
-    # Use a variable for the Redis version. Defaults to 6.2-alpine.
     image: redis:${REDIS_IMAGE_TAG:-6.2-alpine}
     networks:
       - magento-network
@@ -142,4 +156,4 @@ networks:
 volumes:
   dbdata:
   magento-code:
-  db-backups: # New volume to store database backups
+  db-backups: # Shared volume to store database backups
