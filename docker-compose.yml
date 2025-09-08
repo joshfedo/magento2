@@ -1,18 +1,19 @@
-# docker-compose.yml - Enhanced for Automated Preview DB Seeding from Nightly Backups
+# docker-compose.yml - Corrected for Standard Coolify Environment Variables
 version: '3.8'
 services:
-  # New service for nightly database backups - only runs on the main environment
+  # Backup service - runs only on the main (non-preview) environment
   db-backup:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     environment:
-      # Use distinct variable names to avoid conflicts with the image's entrypoint
-      - DUMP_DB_HOST=db
-      - DUMP_DB_NAME=${COOLIFY_DATABASE_NAME:-magento}
-      - DUMP_DB_USER=${COOLIFY_DATABASE_USER:-magento}
-      - DUMP_DB_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-      - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
+      # Explicitly define the host of the database to back up
+      - MYSQL_HOST=db
+      # The following variables are automatically injected by Coolify
+      - COOLIFY_DATABASE_NAME
+      - COOLIFY_DATABASE_USER
+      - COOLIFY_DATABASE_PASSWORD
+      - COOLIFY_PREVIEW_DEPLOYMENT
     volumes:
       - db-backups:/backups
     command: |
@@ -25,22 +26,18 @@ services:
         fi
         
         # Give the DB service a moment to initialize fully on first start
-        echo '⏳ Backup service waiting for database to be ready...'
+        echo '⏳ Backup service waiting for database connection...'
         sleep 30
 
         # Loop to perform nightly backups
         while true; do
           echo '🚀 Starting nightly database backup...'
           
-          # Check for necessary variables to prevent errors
-          if [ -z \"$DUMP_DB_HOST\" ] || [ -z \"$DUMP_DB_USER\" ] || [ -z \"$DUMP_DB_PASSWORD\" ] || [ -z \"$DUMP_DB_NAME\" ]; then
-            echo '❌ Error: Database connection variables are not set. Skipping backup.'
-          else
-            # Execute the dump with the --no-tablespaces flag for better compatibility
-            mysqldump --no-tablespaces -h \"$DUMP_DB_HOST\" -u \"$DUMP_DB_USER\" -p\"$DUMP_DB_PASSWORD\" \"$DUMP_DB_NAME\" > /backups/latest.sql
-            echo '✅ Nightly backup complete.'
-          fi
+          # Use the standard Coolify variables to create the dump
+          # The --no-tablespaces flag is added for better import compatibility
+          mysqldump --no-tablespaces -h \"$MYSQL_HOST\" -u \"$COOLIFY_DATABASE_USER\" -p\"$COOLIFY_DATABASE_PASSWORD\" \"$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
           
+          echo '✅ Nightly backup completed successfully.'
           echo '📅 Scheduling next backup in 24 hours.'
           sleep 86400 # Sleep for 24 hours
         done
@@ -57,10 +54,12 @@ services:
     networks:
       - magento-network
     environment:
+      # These are used by the mariadb entrypoint script to initialize the DB
       - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
       - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
       - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
       - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
+      # Coolify-specific variables for our script logic
       - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
       - COOLIFY_FQDN=${COOLIFY_FQDN}
     volumes:
@@ -69,28 +68,31 @@ services:
     # This initialization script will import the latest backup on preview environments
     command: |
       bash -c "
-        # Default entrypoint starts MariaDB
+        # The default entrypoint starts MariaDB in the background
         docker-entrypoint.sh mysqld &
         MYSQL_PID=$!
 
-        # For preview deployments, wait for DB to be ready and import the backup
+        # For preview deployments, wait for the DB to be ready and import the backup
         if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
-          echo '🔎 Preview environment detected, waiting for database...'
+          echo '🔎 Preview environment detected. Waiting for database to initialize...'
           for i in {1..60}; do
             if mysqladmin ping -h localhost --silent; then
               echo '✅ Database is ready.'
               # Check if a backup file exists and import it
               if [ -f /backups/latest.sql ]; then
                 echo '📥 Found database backup, starting import...'
+                # Use the variables defined for this container to import the data
                 mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" < /backups/latest.sql
                 echo '✅ Database import complete.'
+
                 # Sanitize data for the preview environment
+                echo '🔧 Sanitizing database for preview environment...'
                 mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" -e \"
                   UPDATE core_config_data SET value = 'https://\$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url');
                   UPDATE core_config_data SET value = '1' WHERE path LIKE '%dev/debug%';
                   UPDATE core_config_data SET value = 'sandbox' WHERE path LIKE '%payment%mode%';
                 \"
-                echo '🔧 Database sanitized for preview environment.'
+                echo '✅ Database sanitization complete.'
               else
                 echo '⚠️ No backup found. Starting with a fresh database.'
               fi
@@ -100,6 +102,7 @@ services:
             sleep 1
           done
         fi
+        # Keep the database server running
         wait $MYSQL_PID
       "
 
