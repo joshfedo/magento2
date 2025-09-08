@@ -1,13 +1,16 @@
-# docker-compose.yml - Final, Resilient Version with Robust Service Waiting
+# docker-compose.yml - FINAL CORRECTED VERSION
 version: '3.8'
 services:
-  # Backup service with a reliable waiting loop
+  # Backup service with a non-conflicting host variable and resilient waiting loop
   db-backup:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     environment:
-      - MYSQL_HOST=db
+      # --- THE FIX ---
+      # Use a unique variable name that the mariadb image will not interfere with.
+      - BACKUP_DB_HOST=db 
+      # Coolify provides the rest of these automatically
       - COOLIFY_DATABASE_NAME
       - COOLIFY_DATABASE_USER
       - COOLIFY_DATABASE_PASSWORD
@@ -17,17 +20,16 @@ services:
     command: |
       bash -c "
         set -e
-        # This service only runs on the main (non-preview) environment
         if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
           echo '⏭️ Skipping backup service on preview environment.'
           exit 0
         fi
         
-        # --- IMPROVED LOGIC ---
-        # Actively wait for the database to be ready instead of using a static sleep.
-        echo '⏳ Backup service waiting for database connection at $MYSQL_HOST...'
-        for i in {1..120}; do # Wait for a maximum of 2 minutes
-          if mysqladmin ping -h \"$MYSQL_HOST\" --silent; then
+        # Wait for the database to be ready
+        echo '⏳ Backup service waiting for database connection at $BACKUP_DB_HOST...'
+        for i in {1..120}; do
+          # Use the unique host variable here as well
+          if mysqladmin ping -h \"$BACKUP_DB_HOST\" --silent; then
             echo '✅ Database connection established.'
             break
           fi
@@ -35,15 +37,14 @@ services:
             echo '❌ Database connection timed out after 2 minutes.'
             exit 1
           fi
-          echo -n '.'
           sleep 1
         done
-        # --- END IMPROVEMENT ---
 
-        # The backup loop remains the same
+        # The final, operational backup loop
         while true; do
           echo '🚀 Starting nightly database backup...'
-          mysqldump --no-tablespaces -h \"$MYSQL_HOST\" -u \"$COOLIFY_DATABASE_USER\" -p\"$COOLIFY_DATABASE_PASSWORD\" \"$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
+          # --- AND THE FIX IS USED HERE ---
+          mysqldump --no-tablespaces -h \"$BACKUP_DB_HOST\" -u \"$COOLIFY_DATABASE_USER\" -p\"$COOLIFY_DATABASE_PASSWORD\" \"$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
           echo '✅ Nightly backup completed successfully.'
           echo '📅 Scheduling next backup in 24 hours.'
           sleep 86400
@@ -55,7 +56,9 @@ services:
     depends_on:
       - db
 
-  # Database service (no changes needed here)
+  # --- NO OTHER SERVICES NEED TO BE CHANGED ---
+  # db, magento, opensearch, and redis sections remain the same as the last correct version.
+
   db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
@@ -102,15 +105,14 @@ services:
               fi
               break
             fi
-            echo -n '.'
             sleep 1
           done
         fi
         wait $MYSQL_PID
       "
 
+  # (magento, opensearch, redis, networks, and volumes sections are unchanged)
   magento:
-    # ... (no changes in magento, opensearch, or redis sections)
     image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.2-nginx}
     networks:
       - magento-network
@@ -140,7 +142,6 @@ services:
       - db
       - redis
       - opensearch
-
   opensearch:
     image: opensearchproject/opensearch:${OPENSEARCH_IMAGE_TAG:-2.5.0}
     networks:
@@ -148,18 +149,15 @@ services:
     environment:
       - "discovery.type=single-node"
       - "plugins.security.disabled=true"
-
   redis:
     image: redis:${REDIS_IMAGE_TAG:-6.2-alpine}
     networks:
       - magento-network
-
 networks:
   magento-network:
   coolify-network:
     name: coolify
     external: true
-
 volumes:
   dbdata:
   magento-code:
