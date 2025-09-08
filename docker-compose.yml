@@ -1,15 +1,13 @@
-# docker-compose.yml - Corrected for Standard Coolify Environment Variables
+# docker-compose.yml - Final, Resilient Version with Robust Service Waiting
 version: '3.8'
 services:
-  # Backup service - runs only on the main (non-preview) environment
+  # Backup service with a reliable waiting loop
   db-backup:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     environment:
-      # Explicitly define the host of the database to back up
       - MYSQL_HOST=db
-      # The following variables are automatically injected by Coolify
       - COOLIFY_DATABASE_NAME
       - COOLIFY_DATABASE_USER
       - COOLIFY_DATABASE_PASSWORD
@@ -25,21 +23,30 @@ services:
           exit 0
         fi
         
-        # Give the DB service a moment to initialize fully on first start
-        echo '⏳ Backup service waiting for database connection...'
-        sleep 30
+        # --- IMPROVED LOGIC ---
+        # Actively wait for the database to be ready instead of using a static sleep.
+        echo '⏳ Backup service waiting for database connection at $MYSQL_HOST...'
+        for i in {1..120}; do # Wait for a maximum of 2 minutes
+          if mysqladmin ping -h \"$MYSQL_HOST\" --silent; then
+            echo '✅ Database connection established.'
+            break
+          fi
+          if [ $i -eq 120 ]; then
+            echo '❌ Database connection timed out after 2 minutes.'
+            exit 1
+          fi
+          echo -n '.'
+          sleep 1
+        done
+        # --- END IMPROVEMENT ---
 
-        # Loop to perform nightly backups
+        # The backup loop remains the same
         while true; do
           echo '🚀 Starting nightly database backup...'
-          
-          # Use the standard Coolify variables to create the dump
-          # The --no-tablespaces flag is added for better import compatibility
           mysqldump --no-tablespaces -h \"$MYSQL_HOST\" -u \"$COOLIFY_DATABASE_USER\" -p\"$COOLIFY_DATABASE_PASSWORD\" \"$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
-          
           echo '✅ Nightly backup completed successfully.'
           echo '📅 Scheduling next backup in 24 hours.'
-          sleep 86400 # Sleep for 24 hours
+          sleep 86400
         done
       "
     restart: "unless-stopped"
@@ -48,47 +55,44 @@ services:
     depends_on:
       - db
 
-  # Database service for both main and preview environments
+  # Database service (no changes needed here)
   db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     environment:
-      # These are used by the mariadb entrypoint script to initialize the DB
       - MYSQL_ROOT_PASSWORD=${COOLIFY_DATABASE_ROOT_PASSWORD:-root_password}
       - MYSQL_DATABASE=${COOLIFY_DATABASE_NAME:-magento}
       - MYSQL_USER=${COOLIFY_DATABASE_USER:-magento}
       - MYSQL_PASSWORD=${COOLIFY_DATABASE_PASSWORD:-magento_password}
-      # Coolify-specific variables for our script logic
       - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
       - COOLIFY_FQDN=${COOLIFY_FQDN}
     volumes:
       - dbdata:/var/lib/mysql
       - db-backups:/backups
-    # This initialization script will import the latest backup on preview environments
     command: |
       bash -c "
-        # The default entrypoint starts MariaDB in the background
         docker-entrypoint.sh mysqld &
         MYSQL_PID=$!
-
-        # For preview deployments, wait for the DB to be ready and import the backup
         if [ \"$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
-          echo '🔎 Preview environment detected. Waiting for database to initialize...'
+          echo '🔎 Preview environment detected. Waiting for database...'
           for i in {1..60}; do
             if mysqladmin ping -h localhost --silent; then
               echo '✅ Database is ready.'
-              # Check if a backup file exists and import it
               if [ -f /backups/latest.sql ]; then
                 echo '📥 Found database backup, starting import...'
-                # Use the variables defined for this container to import the data
                 mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" < /backups/latest.sql
                 echo '✅ Database import complete.'
-
-                # Sanitize data for the preview environment
                 echo '🔧 Sanitizing database for preview environment...'
+                if [ -n \"$COOLIFY_FQDN\" ]; then
+                  echo \"✅ FQDN found: $COOLIFY_FQDN. Updating base URLs...\"
+                  mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" -e \"
+                    UPDATE core_config_data SET value = 'https://\$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url');
+                  \"
+                else
+                  echo \"⚠️ COOLIFY_FQDN is empty. Skipping base URL update.\"
+                fi
                 mysql -u root -p\"$MYSQL_ROOT_PASSWORD\" \"$MYSQL_DATABASE\" -e \"
-                  UPDATE core_config_data SET value = 'https://\$COOLIFY_FQDN/' WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url');
                   UPDATE core_config_data SET value = '1' WHERE path LIKE '%dev/debug%';
                   UPDATE core_config_data SET value = 'sandbox' WHERE path LIKE '%payment%mode%';
                 \"
@@ -102,11 +106,11 @@ services:
             sleep 1
           done
         fi
-        # Keep the database server running
         wait $MYSQL_PID
       "
 
   magento:
+    # ... (no changes in magento, opensearch, or redis sections)
     image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.2-nginx}
     networks:
       - magento-network
@@ -159,4 +163,4 @@ networks:
 volumes:
   dbdata:
   magento-code:
-  db-backups: # Shared volume to store database backups
+  db-backups:
