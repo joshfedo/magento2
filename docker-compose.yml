@@ -10,18 +10,39 @@ services:
       - COOLIFY_DATABASE_PASSWORD
       - COOLIFY_PREVIEW_DEPLOYMENT
       - COOLIFY_FQDN
+      # Add the main app URL for preview environments to access
+      - MAIN_APP_URL=${MAIN_APP_URL:-}
     volumes:
-      # Use a named volume with a consistent name across environments
-      - shared-backups:/backups
+      - db-backups:/backups
     command: |
       bash -c "
         set -e
         if [ \"$$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
-          echo '⏭️ Skipping backup service on preview environment.'
+          echo '⏭️ Preview environment: Fetching backup from main environment...'
+          
+          if [ -n \"$$MAIN_APP_URL\" ]; then
+            echo \"🔗 Attempting to download backup from: $$MAIN_APP_URL/backup/latest.sql\"
+            # Try to download backup from main environment via HTTP
+            for i in {1..30}; do
+              if curl -f -o /backups/latest.sql \"$$MAIN_APP_URL/backup/latest.sql\" 2>/dev/null; then
+                echo '✅ Backup downloaded from main environment.'
+                break
+              fi
+              if [ $$i -eq 30 ]; then
+                echo '⚠️ Could not download backup from main environment.'
+                echo '📁 Creating empty backup file for preview.'
+                touch /backups/latest.sql
+              fi
+              sleep 2
+            done
+          else
+            echo '⚠️ MAIN_APP_URL not set. Cannot fetch backup.'
+            touch /backups/latest.sql
+          fi
           exit 0
         fi
         
-        echo '⏳ Backup service waiting for database connection at host \"db\"...'
+        echo '⏳ Main environment: Waiting for database connection...'
         for i in {1..120}; do
           if mysqladmin ping -h \"db\" --silent; then
             echo '✅ Database connection established.'
@@ -36,14 +57,13 @@ services:
 
         while true; do
           echo '🚀 Starting nightly database backup...'
-          # Create backup with timestamp and keep latest link
           BACKUP_FILE=\"/backups/backup_\$(date +%Y%m%d_%H%M%S).sql\"
           mysqldump --no-tablespaces -u root -p$$MYSQL_ROOT_PASSWORD $$COOLIFY_DATABASE_NAME > \"$$BACKUP_FILE\"
-          ln -sf \"$$BACKUP_FILE\" /backups/latest.sql
+          cp \"$$BACKUP_FILE\" /backups/latest.sql
           echo \"✅ Backup completed: $$BACKUP_FILE\"
           
-          # Optional: Clean up old backups (keep last 7 days)
-          find /backups -name 'backup_*.sql' -mtime +7 -delete
+          # Clean up old backups (keep last 7 days)
+          find /backups -name 'backup_*.sql' -mtime +7 -delete 2>/dev/null || true
           
           echo '📅 Scheduling next backup in 24 hours.'
           sleep 86400
@@ -54,6 +74,54 @@ services:
       - backup
     depends_on:
       - db
+
+  # Add a simple backup server for the main environment
+  backup-server:
+    image: nginx:alpine
+    networks:
+      - magento-network
+      - coolify-network
+    volumes:
+      - db-backups:/usr/share/nginx/html/backup:ro
+    environment:
+      - COOLIFY_PREVIEW_DEPLOYMENT
+    command: |
+      sh -c "
+        if [ \"$$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
+          echo '⏭️ Backup server not needed in preview environment.'
+          exit 0
+        fi
+        
+        # Create simple nginx config to serve backup files
+        cat > /etc/nginx/conf.d/default.conf << 'EOF'
+        server {
+            listen 80;
+            server_name _;
+            location /backup/ {
+                root /usr/share/nginx/html;
+                autoindex on;
+                add_header Access-Control-Allow-Origin *;
+            }
+            location / {
+                return 404;
+            }
+        }
+        EOF
+        
+        echo '🌐 Starting backup file server...'
+        nginx -g 'daemon off;'
+      "
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backup-server.rule=Host(`${COOLIFY_FQDN}`) && PathPrefix(`/backup`)"
+      - "traefik.http.routers.backup-server.entrypoints=websecure"
+      - "traefik.http.routers.backup-server.tls=true"
+      - "traefik.http.routers.backup-server.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backup-server.loadbalancer.server.port=80"
+    profiles:
+      - backup
+    depends_on:
+      - db-backup
 
   db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
@@ -68,8 +136,7 @@ services:
       - COOLIFY_FQDN=${COOLIFY_FQDN}
     volumes:
       - dbdata:/var/lib/mysql
-      # Use the same shared backup volume
-      - shared-backups:/backups
+      - db-backups:/backups
     command: |
       bash -c "
         docker-entrypoint.sh mysqld &
@@ -81,8 +148,10 @@ services:
             if mysqladmin ping -h localhost --silent; then
               echo '✅ Database is ready.'
               
-              # Look for the latest backup
-              if [ -f /backups/latest.sql ]; then
+              # Wait a moment for backup service to potentially download backup
+              sleep 5
+              
+              if [ -f /backups/latest.sql ] && [ -s /backups/latest.sql ]; then
                 echo '📥 Found database backup, starting import...'
                 mysql -u root -p\"$$MYSQL_ROOT_PASSWORD\" \"$$MYSQL_DATABASE\" < /backups/latest.sql
                 echo '✅ Database import complete.'
@@ -103,9 +172,9 @@ services:
                 \"
                 echo '✅ Database sanitization complete.'
               else
-                echo '⚠️ No backup found at /backups/latest.sql. Starting with a fresh database.'
+                echo '⚠️ No backup found or backup is empty. Starting with a fresh database.'
                 echo '📁 Available files in backup directory:'
-                ls -la /backups/ || echo 'Backup directory is empty or inaccessible.'
+                ls -la /backups/ || echo 'Backup directory is empty.'
               fi
               break
             fi
@@ -136,7 +205,7 @@ services:
       - COOLIFY_PREVIEW_DEPLOYMENT=${COOLIFY_PREVIEW_DEPLOYMENT}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.magento-poc.rule=Host(`${COOLIFY_FQDN}`)"
+      - "traefik.http.routers.magento-poc.rule=Host(`${COOLIFY_FQDN}`) && !PathPrefix(`/backup`)"
       - "traefik.http.routers.magento-poc.entrypoints=websecure"
       - "traefik.http.routers.magento-poc.tls=true"
       - "traefik.http.routers.magento-poc.tls.certresolver=letsencrypt"
@@ -168,8 +237,4 @@ networks:
 volumes:
   dbdata:
   magento-code:
-  # Use a consistently named volume that can be shared
-  shared-backups:
-    name: magento-db-backups
-    external: true
-    # Note: Create volume first with: docker volume create magento-db-backups
+  db-backups:
