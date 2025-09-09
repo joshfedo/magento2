@@ -38,7 +38,7 @@ services:
         while true; do
           echo '🚀 Starting nightly database backup...'
           # The hostname is now hardcoded for maximum reliability.
-          mysqldump --no-tablespaces -h \"db\" -u \"$$COOLIFY_DATABASE_USER\" -p\"$$COOLIFY_DATABASE_PASSWORD\" \"$$COOLIFY_DATABASE_NAME\" > /backups/latest.sql
+            mysqldump --no-tablespaces -u root -proot_password $COOLIFY_DATABASE_NAME > /backups/latest.sql > /backups/latest.sql
           echo '✅ Nightly backup completed successfully.'
           echo '📅 Scheduling next backup in 24 hours.'
           sleep 86400
