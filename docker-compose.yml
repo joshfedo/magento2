@@ -1,2 +1,5 @@
+version: '3.8'
+
+# Include the platform base template
 include:
   - /opt/coolify/shared-platform/templates/docker-compose.base.yml
