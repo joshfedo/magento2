@@ -5,14 +5,14 @@ services:
     networks:
       - magento-network
     environment:
-      # We no longer need a custom host variable.
-      # Coolify provides all of these automatically.
       - COOLIFY_DATABASE_NAME
       - COOLIFY_DATABASE_USER
       - COOLIFY_DATABASE_PASSWORD
       - COOLIFY_PREVIEW_DEPLOYMENT
+      - COOLIFY_FQDN
     volumes:
-      - db-backups:/backups
+      # Use a named volume with a consistent name across environments
+      - shared-backups:/backups
     command: |
       bash -c "
         set -e
@@ -21,7 +21,6 @@ services:
           exit 0
         fi
         
-        # Statically set the hostname to "db"
         echo '⏳ Backup service waiting for database connection at host \"db\"...'
         for i in {1..120}; do
           if mysqladmin ping -h \"db\" --silent; then
@@ -37,9 +36,15 @@ services:
 
         while true; do
           echo '🚀 Starting nightly database backup...'
-          # The hostname is now hardcoded for maximum reliability.
-            mysqldump --no-tablespaces -u root -proot_password $COOLIFY_DATABASE_NAME > /backups/latest.sql > /backups/latest.sql
-          echo '✅ Nightly backup completed successfully.'
+          # Create backup with timestamp and keep latest link
+          BACKUP_FILE=\"/backups/backup_\$(date +%Y%m%d_%H%M%S).sql\"
+          mysqldump --no-tablespaces -u root -p$$MYSQL_ROOT_PASSWORD $$COOLIFY_DATABASE_NAME > \"$$BACKUP_FILE\"
+          ln -sf \"$$BACKUP_FILE\" /backups/latest.sql
+          echo \"✅ Backup completed: $$BACKUP_FILE\"
+          
+          # Optional: Clean up old backups (keep last 7 days)
+          find /backups -name 'backup_*.sql' -mtime +7 -delete
+          
           echo '📅 Scheduling next backup in 24 hours.'
           sleep 86400
         done
@@ -50,8 +55,6 @@ services:
     depends_on:
       - db
 
-  # The 'db' service and all others remain unchanged from the last version.
-  # They already use the correct variable escaping.
   db:
     image: mariadb:${DB_IMAGE_TAG:-10.6}
     networks:
@@ -65,21 +68,26 @@ services:
       - COOLIFY_FQDN=${COOLIFY_FQDN}
     volumes:
       - dbdata:/var/lib/mysql
-      - db-backups:/backups
+      # Use the same shared backup volume
+      - shared-backups:/backups
     command: |
       bash -c "
         docker-entrypoint.sh mysqld &
         MYSQL_PID=$$!
+        
         if [ \"$$COOLIFY_PREVIEW_DEPLOYMENT\" == \"true\" ]; then
           echo '🔎 Preview environment detected. Waiting for database...'
           for i in {1..60}; do
             if mysqladmin ping -h localhost --silent; then
               echo '✅ Database is ready.'
+              
+              # Look for the latest backup
               if [ -f /backups/latest.sql ]; then
                 echo '📥 Found database backup, starting import...'
                 mysql -u root -p\"$$MYSQL_ROOT_PASSWORD\" \"$$MYSQL_DATABASE\" < /backups/latest.sql
                 echo '✅ Database import complete.'
                 echo '🔧 Sanitizing database for preview environment...'
+                
                 if [ -n \"$$COOLIFY_FQDN\" ]; then
                   echo \"✅ FQDN found: $$COOLIFY_FQDN. Updating base URLs...\"
                   mysql -u root -p\"$$MYSQL_ROOT_PASSWORD\" \"$$MYSQL_DATABASE\" -e \"
@@ -88,13 +96,16 @@ services:
                 else
                   echo \"⚠️ COOLIFY_FQDN is empty. Skipping base URL update.\"
                 fi
+                
                 mysql -u root -p\"$$MYSQL_ROOT_PASSWORD\" \"$$MYSQL_DATABASE\" -e \"
                   UPDATE core_config_data SET value = '1' WHERE path LIKE '%dev/debug%';
                   UPDATE core_config_data SET value = 'sandbox' WHERE path LIKE '%payment%mode%';
                 \"
                 echo '✅ Database sanitization complete.'
               else
-                echo '⚠️ No backup found. Starting with a fresh database.'
+                echo '⚠️ No backup found at /backups/latest.sql. Starting with a fresh database.'
+                echo '📁 Available files in backup directory:'
+                ls -la /backups/ || echo 'Backup directory is empty or inaccessible.'
               fi
               break
             fi
@@ -104,7 +115,6 @@ services:
         wait $$MYSQL_PID
       "
 
-  # (magento, opensearch, redis, networks, and volumes sections are unchanged)
   magento:
     image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.2-nginx}
     networks:
@@ -135,6 +145,7 @@ services:
       - db
       - redis
       - opensearch
+
   opensearch:
     image: opensearchproject/opensearch:${OPENSEARCH_IMAGE_TAG:-2.5.0}
     networks:
@@ -142,16 +153,22 @@ services:
     environment:
       - "discovery.type=single-node"
       - "plugins.security.disabled=true"
+
   redis:
     image: redis:${REDIS_IMAGE_TAG:-6.2-alpine}
     networks:
       - magento-network
+
 networks:
   magento-network:
   coolify-network:
     name: coolify
     external: true
+
 volumes:
   dbdata:
   magento-code:
-  db-backups:
+  # Use a consistently named volume that can be shared
+  shared-backups:
+    name: magento-db-backups
+    external: true
