@@ -172,3 +172,4 @@ volumes:
   shared-backups:
     name: magento-db-backups
     external: true
+    # Note: Create volume first with: docker volume create magento-db-backups
