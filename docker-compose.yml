@@ -1,3 +1,11 @@
 version: '3.8'
-include:
-  - https://raw.githubusercontent.com/joshfedo/coolify_build/main/docker-compose.master.yml
+
+# Local project overrides - this merges LAST
+services:
+  magento:
+    # Override PHP version for this project
+    image: shinsenter/magento:${PHP_IMAGE_TAG:-php8.3-nginx}
+    environment:
+      - CUSTOM_PROJECT_VAR=my-value
+      - SERVICE_FQDN_MAGENTO        # Magic variable
+      - SERVICE_PASSWORD_MAGENTO    # Magic variable
