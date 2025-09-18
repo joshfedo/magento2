@@ -52,7 +52,7 @@ services:
 
   db-backup:
     # Use the versioned image from GitHub Packages
-    image: ghcr.io/joshfedo/coolify_build/db:${DB_IMAGE_TAG:-10.6}
+    image: ghcr.io/joshfedo/coolify_build/db_backup:${DB_IMAGE_TAG:-10.6}
     networks:
       - magento-network
     volumes:
